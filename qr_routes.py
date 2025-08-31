@@ -1,131 +1,40 @@
-'''from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
-import qrcode
-import io
-from fastapi.responses import StreamingResponse
-from database import db
-
-# Initialize the API router for QR-code-related routes
-router = APIRouter()
-
-# Schema for check-in
-class CheckIn(BaseModel):
-    email: str
-
-@router.get("/generate")
-async def generate_qr(event_id: str):
-    # Generate a QR code for the given event ID
-    qr_data = f"event:{event_id}"
-    qr = qrcode.make(qr_data)
-    buffer = io.BytesIO()
-    qr.save(buffer, format="PNG")
-    buffer.seek(0)
-    return StreamingResponse(buffer, media_type="image/png")
-
-@router.post("/checkin")
-async def check_in(data: CheckIn):
-    # Verify if the user exists
-    if not db.users.find_one({"email": data.email}):
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    # Record the check-in
-    db.checkins.insert_one({"email": data.email})
-    return {"message": "Check-in successful"}'''
-
-'''
 from fastapi import APIRouter, Depends, HTTPException
 import qrcode
-import io
-from auth import verify_token
-from database import db
-
-router = APIRouter()
-
-@router.get("/generate")
-async def generate_qr(event_id: str, token: str = Depends(verify_token)):
-    user_email = token["email"]
-    qr_data = f"{user_email}|{event_id}"
-    
-    # Simple QR generation
-    img = qrcode.make(qr_data)
-    buf = io.BytesIO()
-    img.save(buf)
-    buf.seek(0)
-    return StreamingResponse(buf, media_type="image/png")
-
-@router.post("/checkin")
-async def check_in(qr_data: str):
-    try:
-        email, event_id = qr_data.split("|")
-        db.checkins.insert_one({"email": email, "event_id": event_id})
-        return {"message": "Checked in!"}
-    except:
-        raise HTTPException(400, "Invalid QR code")
-'''
-
-
-from fastapi import APIRouter, Depends
-from auth import check_step
-from database import db
-import qrcode
-from fastapi.responses import FileResponse
 import os
+from email_service import send_qr_email
+from database import db
+from auth import check_step
+from fastapi.responses import FileResponse
 
 router = APIRouter()
 
 @router.get("/qrcode")
 async def generate_qr(
     event_id: str,
-    token: str = Depends(lambda: check_step(token, "qr"))
+    token_data: dict = Depends(check_step("qr"))
 ):
-    email = check_step(token, "qr")["email"]
-    
     # Verify registration
-    if not db.registrations.find_one({"email": email, "event_id": event_id}):
-        return {
-            "message": "You haven't registered for this event yet.",
-            "solution": "First register at POST /api/events/register"
-        }
+    if not db.registrations.find_one({"email": token_data["email"], "event_id": event_id}):
+        raise HTTPException(status_code=403, detail="Not registered for this event")
     
     # Generate QR code
-    qr_data = f"{email}|{event_id}"
+    qr_data = f"{token_data['email']}|{event_id}"
+    qr_path = f"qrcodes/{token_data['email']}_{event_id}.png"
     os.makedirs("qrcodes", exist_ok=True)
-    filepath = f"qrcodes/{email}_{event_id}.png"
+    qrcode.make(qr_data).save(qr_path)
     
-    qr = qrcode.make(qr_data)
-    qr.save(filepath)
+    # Get event details
+    event = db.events.find_one({"id": event_id}, {"_id": 0})
     
-    return {
-        "message": "QR code generated successfully!",
-        "qr_code": FileResponse(filepath),
-        "instructions": "Show this QR code at the event entrance for check-in"
-    }
-
-@router.post("/checkin")
-async def check_in(qr_data: str):
-    try:
-        email, event_id = qr_data.split("|")
-    except:
-        return {
-            "message": "Invalid QR code format",
-            "solution": "Scan a valid event QR code"
-        }
-    
-    # Verify registration
-    if not db.registrations.find_one({"email": email, "event_id": event_id}):
-        return {
-            "message": "Registration not found",
-            "solution": "This user hasn't registered for the event"
-        }
-    
-    # Mark check-in
-    db.checkins.insert_one({
-        "email": email,
-        "event_id": event_id,
-        "timestamp": datetime.utcnow()
-    })
+    # Send email
+    send_qr_email(
+        to_email=token_data["email"],
+        event_name=event["title"],
+        qr_path=qr_path
+    )
     
     return {
-        "message": f"Check-in successful for {email}",
-        "event": db.events.find_one({"id": event_id}, {"_id": 0})
+        "message": "QR code generated and sent to your email",
+        "event": event,
+        "qr_image": FileResponse(qr_path)
     }

@@ -1,34 +1,3 @@
-'''import bcrypt
-
-# Hash a plain-text password
-def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode()
-
-# Verify a plain-text password against a hashed password
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))'''
-'''
-import bcrypt
-import jwt
-from datetime import datetime, timedelta
-
-# Simple JWT setup
-SECRET_KEY = "your-simple-secret-key"  # Just use a simple string
-ALGORITHM = "HS256"
-
-def hash_password(password: str) -> str:
-    salt = bcrypt.gensalt()
-    return bcrypt.hashpw(password.encode(), salt).decode()
-
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return bcrypt.checkpw(plain_password.encode(), hashed_password.encode())
-
-def create_token(email: str) -> str:
-    return jwt.encode({"email": email}, SECRET_KEY, algorithm=ALGORITHM)
-
-def verify_token(token: str):
-    return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])'''
-
 from datetime import datetime, timedelta
 import jwt
 import bcrypt
@@ -37,51 +6,50 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer
 from pydantic import BaseModel
 
-# Configuration
-SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-here")
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
 security = HTTPBearer()
 
 class TokenData(BaseModel):
     email: str
     current_step: str  # register → browse → qr
+    exp: datetime
 
 def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return bcrypt.checkpw(plain_password.encode(), hashed_password.encode())
+    return bcrypt.checkpw(
+        plain_password.encode('utf-8'), 
+        hashed_password.encode('utf-8')
+    )
 
 def create_token(email: str, current_step: str) -> str:
     payload = {
         "email": email,
         "current_step": current_step,
-        "exp": datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        "exp": datetime.utcnow() + timedelta(minutes=30)
     }
-    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+    return jwt.encode(payload, os.getenv("SECRET_KEY", "secret"), algorithm="HS256")
 
-async def verify_token(token: str = Depends(security)):
+async def verify_token(token: str = Depends(security)) -> dict:
     try:
-        payload = jwt.decode(token.credentials, SECRET_KEY, algorithms=[ALGORITHM])
-        return payload  # Return raw dict instead of TokenData
+        payload = jwt.decode(token.credentials, os.getenv("SECRET_KEY", "secret"), algorithms=["HS256"])
+        return payload
     except jwt.ExpiredSignatureError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Session expired. Please login again."
-        )
+        raise HTTPException(status_code=401, detail="Token expired")
     except Exception:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token. Please login."
-        )
+        raise HTTPException(status_code=401, detail="Invalid token")
 
-async def check_step(required_step: str = "browse"):
+def check_step(required_step: str):
     async def dependency(token_data: dict = Depends(verify_token)):
         if token_data.get("current_step") != required_step:
+            step_names = {
+                "register": "registration",
+                "browse": "event selection",
+                "qr": "QR generation"
+            }
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Please complete your {token_data.get('current_step')} step first."
+                status_code=403,
+                detail=f"Please complete {step_names.get(token_data.get('current_step'))} step first"
             )
         return token_data
     return dependency
